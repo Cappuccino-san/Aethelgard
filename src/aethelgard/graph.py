@@ -34,8 +34,17 @@ def get_kuzu_db(graph_path: str | Path) -> kuzu.Database:
     return db
 
 
-def close_kuzu_db(graph_path: str | Path) -> None:
-    """Close and release file lock on a Kùzu database."""
+def close_kuzu_db(graph_path: Optional[str | Path] = None) -> None:
+    """Close and release file lock on a Kùzu database (or all cached databases if graph_path is None)."""
+    if graph_path is None:
+        for abs_p, db in list(_KUZU_DATABASES.items()):
+            try:
+                db.close()
+            except Exception:
+                pass
+        _KUZU_DATABASES.clear()
+        return
+
     p = str(graph_path)
     if p not in (":memory:", ""):
         abs_p = os.path.abspath(p)
@@ -268,6 +277,25 @@ class GraphView:
         )
         return res.has_next()
 
+    def get_superseded_set(self, decision_ids: list[str]) -> set[str]:
+        """Batch query to find which decision IDs in the provided list have been superseded."""
+        if not decision_ids:
+            return set()
+        self.init_view()
+        conn = self._get_connection()
+        res = conn.execute(
+            """
+            MATCH (newer:Decision)-[:SUPERSEDES]->(target:Decision)
+            WHERE target.id IN $ids
+            RETURN DISTINCT target.id;
+            """,
+            {"ids": list(decision_ids)},
+        )
+        superseded: set[str] = set()
+        while res.has_next():
+            superseded.add(res.get_next()[0])
+        return superseded
+
     def get_superseded_by(self, decision_id: str) -> list[str]:
         """Return IDs of decisions that supersede this decision."""
         self.init_view()
@@ -327,6 +355,73 @@ class GraphView:
                 }
             )
         return out
+
+    def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Search the episodic graph for events and decisions matching entities or keywords."""
+        self.init_view()
+        conn = self._get_connection()
+        tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_$-]{2,}", query)]
+        if not tokens:
+            return []
+
+        candidates: dict[str, dict[str, Any]] = {}
+
+        # 1. Match events connected to entities matching query tokens
+        try:
+            res = conn.execute(
+                """
+                MATCH (ev:Event)-[:INVOLVES]->(ent:Entity)
+                WHERE lower(ent.name) IN $tokens
+                RETURN ev.id, ev.event_type, ev.timestamp, count(ent) AS rel
+                ORDER BY rel DESC, ev.timestamp DESC
+                LIMIT $limit;
+                """,
+                {"tokens": tokens, "limit": limit},
+            )
+            while res.has_next():
+                row = res.get_next()
+                ev_id, ev_type, ts, rel = row[0], row[1], row[2], row[3]
+                candidates[ev_id] = {
+                    "event_id": ev_id,
+                    "event_type": ev_type,
+                    "timestamp": ts,
+                    "graph_score": float(rel),
+                }
+        except Exception:
+            pass
+
+        # 2. Match decisions whose title, context, or decision text contains tokens
+        try:
+            for tok in tokens[:5]:
+                res_d = conn.execute(
+                    """
+                    MATCH (d:Decision)
+                    MATCH (ev:Event {id: d.id})
+                    WHERE lower(d.title) CONTAINS $tok OR lower(d.decision) CONTAINS $tok
+                    RETURN ev.id, ev.event_type, ev.timestamp
+                    LIMIT $limit;
+                    """,
+                    {"tok": tok, "limit": limit},
+                )
+                while res_d.has_next():
+                    row = res_d.get_next()
+                    d_id, ev_type, ts = row[0], row[1], row[2]
+                    if d_id in candidates:
+                        candidates[d_id]["graph_score"] += 1.0
+                    else:
+                        candidates[d_id] = {
+                            "event_id": d_id,
+                            "event_type": ev_type,
+                            "timestamp": ts,
+                            "graph_score": 1.0,
+                        }
+        except Exception:
+            pass
+
+        sorted_candidates = sorted(
+            candidates.values(), key=lambda x: x["graph_score"], reverse=True
+        )
+        return sorted_candidates[:limit]
 
 
 def commit_decision(

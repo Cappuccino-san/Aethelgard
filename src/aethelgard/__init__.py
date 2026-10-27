@@ -10,6 +10,13 @@ from .ledger import (
     log_execution_artifact,
     verify_provenance,
 )
+from .ranker import (
+    DEFAULT_K,
+    PSI_ACTIVE,
+    PSI_SUPERSEDED,
+    HybridRRFRanker,
+    hybrid_rrf_search,
+)
 from .views import (
     FTS5View,
     VectorView,
@@ -24,6 +31,11 @@ __all__ = [
     "FTS5View",
     "VectorView",
     "GraphView",
+    "HybridRRFRanker",
+    "hybrid_rrf_search",
+    "DEFAULT_K",
+    "PSI_ACTIVE",
+    "PSI_SUPERSEDED",
     "scrub_payload",
     "shannon_entropy",
     "canonicalize_json",

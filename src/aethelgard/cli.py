@@ -40,6 +40,14 @@ def main(argv: list[str] | None = None) -> int:
     verify_p.add_argument("--start-seq", type=int, default=None)
     verify_p.add_argument("--end-seq", type=int, default=None)
 
+    # twin search
+    search_p = subparsers.add_parser("search", help="Execute 3-way hybrid RRF search across lexical, vector, and graph views")
+    search_p.add_argument("query", help="Query string")
+    search_p.add_argument("--limit", type=int, default=10)
+    search_p.add_argument("--k", type=int, default=60)
+    search_p.add_argument("--lambda", dest="decay_lambda", type=float, default=0.0)
+    search_p.add_argument("--no-superseded", action="store_true", help="Exclude superseded decisions")
+
     args = parser.parse_args(argv)
     ledger = Ledger(db_path=args.db)
     view = FTS5View(db_path=args.db)
@@ -78,6 +86,20 @@ def main(argv: list[str] | None = None) -> int:
         res = ledger.verify_provenance(start_seq=args.start_seq, end_seq=args.end_seq)
         print(json.dumps(res))
         return 0 if res["valid"] else 1
+
+    if args.command == "search":
+        from .ranker import HybridRRFRanker
+
+        ranker = HybridRRFRanker(db_path=args.db)
+        results = ranker.search(
+            query=args.query,
+            limit=args.limit,
+            k=args.k,
+            decay_lambda=args.decay_lambda,
+            include_superseded=not args.no_superseded,
+        )
+        print(json.dumps(results, indent=2))
+        return 0
 
     return 1
 

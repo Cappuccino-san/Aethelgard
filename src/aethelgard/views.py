@@ -136,33 +136,40 @@ class FTS5View:
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Execute BM25 lexical search over the FTS5 view."""
-        quoted_query = '"' + query.replace('"', '') + '"'
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    rowid AS seq,
-                    event_id,
-                    event_type,
-                    content,
-                    bm25(events_fts) AS bm25_score
-                FROM events_fts
-                WHERE events_fts MATCH ?
-                ORDER BY bm25(events_fts) ASC, rowid ASC
-                LIMIT ?;
-                """,
-                (quoted_query, limit),
-            ).fetchall()
-            return [
-                {
-                    "seq": r["seq"],
-                    "event_id": r["event_id"],
-                    "event_type": r["event_type"],
-                    "content": r["content"],
-                    "bm25_score": round(float(r["bm25_score"]), 8),
-                }
-                for r in rows
-            ]
+        self.init_view()
+        clean_query = query.replace('"', '').strip()
+        if not clean_query:
+            return []
+        quoted_query = f'"{clean_query}"'
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        rowid AS seq,
+                        event_id,
+                        event_type,
+                        content,
+                        bm25(events_fts) AS bm25_score
+                    FROM events_fts
+                    WHERE events_fts MATCH ?
+                    ORDER BY bm25(events_fts) ASC, rowid ASC
+                    LIMIT ?;
+                    """,
+                    (quoted_query, limit),
+                ).fetchall()
+                return [
+                    {
+                        "seq": r["seq"],
+                        "event_id": r["event_id"],
+                        "event_type": r["event_type"],
+                        "content": r["content"],
+                        "bm25_score": round(float(r["bm25_score"]), 8),
+                    }
+                    for r in rows
+                ]
+        except sqlite3.OperationalError:
+            return []
 
 
 class VectorView:
