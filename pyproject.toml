@@ -1,0 +1,23 @@
+[project]
+name = "aethelgard"
+version = "1.0.0"
+description = "Sovereign Cognitive Twin & Cryptographic Provenance Engine"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "blake3>=0.4.1",
+    "cryptography>=42.0.0",
+    "sqlite-vec>=0.1.9",
+    "kuzu>=0.11.0",
+]
+
+[project.scripts]
+twin = "aethelgard.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

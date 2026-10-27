@@ -1,0 +1,23 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Python cache & pytest artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Aethelgard local ledger databases and disposable views
+ledger.db
+*.db
+*.db-wal
+*.db-shm
+graph.kuzu
+graph.kuzu*
+*.kuzu
+
+# Distribution and packaging
+dist/
+build/
+*.egg-info/
