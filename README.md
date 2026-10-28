@@ -10,6 +10,30 @@ Right now that context is scattered and fragile. It's in chat histories that res
 
 Aethelgard is meant to fix that by keeping one local, verifiable record, and letting any model plug into it.
 
+How that works, in purpose terms:
+
+Ledger: a diary that can't be silently edited. Every decision, note, commit, and file change gets hashed to the previous one, so if someone edits the middle, verify fails. Now signed with your persistent Ed25519 key, so new events are signed, not just hashed.
+
+Airlock: secrets are scrubbed before anything is stored, so your memory doesn't become a leak.
+Views: the same ledger is indexed three ways, so recall actually works. FTS5 finds exact words, sqlite-vec with Ollama finds meaning even if you phrase it differently, and KùzuDB finds relationships and timelines, like what superseded what, and what involved which project.
+
+RRF: those three are combined, with old superseded decisions penalized, so you get the current answer, not a dead one.
+
+MCP: that's the plug. Antigravity today, any other agent tomorrow, can call recall_context, commit_decision, trace_entity_history, log_execution_artifact, and verify_provenance, all from the same local store. You're not locked to one vendor's memory.
+
+Hook and daemon: passive capture, so you don't have to remember to log. A git commit becomes a git_commit event automatically, a file change becomes a file_change event, without you writing a note.
+
+A concrete example:
+
+In 2026 you decide to use persistent signing over unsigned events, and you reject plain markdown notes. In 2029 you ask a totally different model, "why do we sign events?" It shouldn't guess. It should recall that exact decision, show you the rejected alternatives, show you that ADR-003 superseded the earlier unsigned approach, and show you verify still passes for that chain.
+
+That's the compounding part. Every year you use it, the record gets more useful, not more stale, and it stays yours, local, offline-first, not in someone else's cloud, not lost when a platform changes pricing or shuts down.
+
+What it is not, honestly:
+
+It's tamper-evident, not tamper-proof. If someone has both your ledger and your key on the same machine, they could rewrite and re-sign. It doesn't prove who you are to the outside world, and its timestamps are local, not trusted time. That's why the backups matter, and why verify is about detecting middle edits, not claiming absolute proof.
+
+In short: models will come and go. Aethelgard is the part that stays, remembers, and can prove what it remembers.
 This is the Gemini-built v1 code, packaged unchanged for Antigravity.
 
 ## Open in Antigravity
