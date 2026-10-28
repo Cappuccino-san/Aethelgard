@@ -33,6 +33,7 @@ from .systemd import (
     install_systemd_unit,
     uninstall_systemd_unit,
 )
+from .viewer import run_viewer
 from .views import (
     FTS5View,
     VectorView,
@@ -81,6 +82,7 @@ __all__ = [
     "get_systemd_unit_content",
     "install_systemd_unit",
     "uninstall_systemd_unit",
+    "run_viewer",
 ]
 
 

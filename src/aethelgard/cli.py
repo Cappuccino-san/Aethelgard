@@ -89,6 +89,12 @@ def main(argv: list[str] | None = None) -> int:
     daemon_svc.add_argument("--print", action="store_true", help="Print systemd user service unit")
     daemon_svc.add_argument("--watch-dir", type=str, default=None, help="Directory to configure in service")
 
+    # twin viewer
+    viewer_p = subparsers.add_parser("viewer", help="Start local read-only web viewer on 127.0.0.1")
+    viewer_p.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
+    viewer_p.add_argument("--host", default="127.0.0.1", help="Host interface (must be 127.0.0.1)")
+    viewer_p.add_argument("--no-browser", action="store_true", help="Do not open web browser automatically")
+
     args = parser.parse_args(argv)
     signing_key = load_or_create_signing_key(args.key)
     ledger = Ledger(db_path=args.db, signing_key=signing_key)
@@ -185,6 +191,17 @@ def main(argv: list[str] | None = None) -> int:
                 path = install_systemd_unit(watch_dir=args.watch_dir)
                 print(json.dumps({"installed_service": str(path)}))
                 return 0
+
+    if args.command == "viewer":
+        from .viewer import run_viewer
+
+        run_viewer(
+            host=args.host,
+            port=args.port,
+            db_path=args.db,
+            open_browser=not args.no_browser,
+        )
+        return 0
 
     return 1
 
