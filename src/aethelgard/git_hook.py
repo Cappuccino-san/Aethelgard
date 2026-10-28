@@ -168,8 +168,8 @@ def get_post_commit_hook_script() -> str:
     true
 ) </dev/null >/dev/null 2>&1 &
 exit 0
-"""
-    return POST_COMMIT_HOOK_SCRIPT
+""".replace("\r\n", "\n").replace("\r", "\n")
+    return POST_COMMIT_HOOK_SCRIPT.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def install_post_commit_hook(
@@ -184,12 +184,12 @@ def install_post_commit_hook(
         hooks_dir: Specific directory to store the hook.
         target_repo: If global_hook is False, target repository directory to install `.git/hooks/post-commit`.
     """
-    script_content = get_post_commit_hook_script()
+    script_content = get_post_commit_hook_script().replace("\r\n", "\n").replace("\r", "\n")
     if global_hook:
         dest_dir = Path(hooks_dir) if hooks_dir else DEFAULT_GLOBAL_HOOKS_DIR
         dest_dir.mkdir(parents=True, exist_ok=True)
         hook_path = dest_dir / "post-commit"
-        hook_path.write_text(script_content, encoding="utf-8")
+        hook_path.write_text(script_content, encoding="utf-8", newline="\n")
 
         # Make executable on POSIX systems
         try:
@@ -210,7 +210,7 @@ def install_post_commit_hook(
         hooks_target = git_dir / "hooks"
         hooks_target.mkdir(parents=True, exist_ok=True)
         hook_path = hooks_target / "post-commit"
-        hook_path.write_text(script_content, encoding="utf-8")
+        hook_path.write_text(script_content, encoding="utf-8", newline="\n")
 
         try:
             current_mode = hook_path.stat().st_mode

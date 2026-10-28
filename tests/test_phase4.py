@@ -171,6 +171,7 @@ def test_post_commit_hook_installation(tmp_path: Path) -> None:
     assert installed_local.exists()
     assert (repo_dir / ".git" / "hooks" / "post-commit").exists()
     assert installed_local.read_text(encoding="utf-8") == script
+    assert b"\r" not in installed_local.read_bytes(), "Installed local hook must contain no \\r bytes"
 
     # Custom directory install (simulating global hooks directory)
     custom_hooks = tmp_path / "custom_hooks"
@@ -181,11 +182,29 @@ def test_post_commit_hook_installation(tmp_path: Path) -> None:
         installed_global = install_post_commit_hook(global_hook=True, hooks_dir=custom_hooks)
         assert installed_global.exists()
         assert (custom_hooks / "post-commit").exists()
+        assert b"\r" not in installed_global.read_bytes(), "Installed global hook must contain no \\r bytes"
     finally:
         if orig_hooks:
             _run_git_cmd(["config", "--global", "core.hooksPath", orig_hooks])
         else:
             _run_git_cmd(["config", "--global", "--unset", "core.hooksPath"])
+
+
+def test_post_commit_hook_no_carriage_returns(tmp_path: Path) -> None:
+    """Verify that installed post-commit hook scripts strictly contain no carriage return bytes (\\r).
+
+    POSIX shells such as Git for Windows' sh.exe fail when line-continuation backslashes
+    are followed by \\r\\n instead of \\n.
+    """
+    repo_dir = tmp_path / "test_repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    installed = install_post_commit_hook(global_hook=False, target_repo=repo_dir)
+    raw_bytes = installed.read_bytes()
+    assert b"\r" not in raw_bytes
+    assert b"\r\n" not in raw_bytes
+    assert b"\n" in raw_bytes
 
 
 def test_watchdog_passive_filesystem_listener(tmp_path: Path) -> None:
