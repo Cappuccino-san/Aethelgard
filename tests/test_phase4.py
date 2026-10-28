@@ -174,9 +174,18 @@ def test_post_commit_hook_installation(tmp_path: Path) -> None:
 
     # Custom directory install (simulating global hooks directory)
     custom_hooks = tmp_path / "custom_hooks"
-    installed_global = install_post_commit_hook(global_hook=True, hooks_dir=custom_hooks)
-    assert installed_global.exists()
-    assert (custom_hooks / "post-commit").exists()
+    from aethelgard.git_hook import _run_git_cmd
+
+    orig_hooks = _run_git_cmd(["config", "--global", "--get", "core.hooksPath"])
+    try:
+        installed_global = install_post_commit_hook(global_hook=True, hooks_dir=custom_hooks)
+        assert installed_global.exists()
+        assert (custom_hooks / "post-commit").exists()
+    finally:
+        if orig_hooks:
+            _run_git_cmd(["config", "--global", "core.hooksPath", orig_hooks])
+        else:
+            _run_git_cmd(["config", "--global", "--unset", "core.hooksPath"])
 
 
 def test_watchdog_passive_filesystem_listener(tmp_path: Path) -> None:

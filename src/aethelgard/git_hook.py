@@ -151,6 +151,24 @@ def capture_git_commit(
 
 def get_post_commit_hook_script() -> str:
     """Return the content of the non-blocking post-commit shell hook."""
+    if sys.platform == "win32":
+        project_root = Path(__file__).resolve().parents[2]
+        twin_exe = project_root / ".venv" / "Scripts" / "twin.exe"
+        if not twin_exe.exists():
+            twin_exe = Path(sys.prefix) / "Scripts" / "twin.exe"
+        twin_posix = twin_exe.as_posix()
+        proj_posix = project_root.as_posix()
+        return f"""#!/bin/sh
+# Project Aethelgard Non-Blocking Git Post-Commit Hook
+# Invariant: A hook failure must NEVER block a commit.
+(
+    REPO_DIR="$(pwd -W 2>/dev/null || pwd)"
+    "{twin_posix}" hook post-commit --repo "$REPO_DIR" "$@" 2>/dev/null || \\
+    (cd "{proj_posix}" && uv run twin hook post-commit --repo "$REPO_DIR" "$@" 2>/dev/null) || \\
+    true
+) </dev/null >/dev/null 2>&1 &
+exit 0
+"""
     return POST_COMMIT_HOOK_SCRIPT
 
 
@@ -166,11 +184,12 @@ def install_post_commit_hook(
         hooks_dir: Specific directory to store the hook.
         target_repo: If global_hook is False, target repository directory to install `.git/hooks/post-commit`.
     """
+    script_content = get_post_commit_hook_script()
     if global_hook:
         dest_dir = Path(hooks_dir) if hooks_dir else DEFAULT_GLOBAL_HOOKS_DIR
         dest_dir.mkdir(parents=True, exist_ok=True)
         hook_path = dest_dir / "post-commit"
-        hook_path.write_text(POST_COMMIT_HOOK_SCRIPT, encoding="utf-8")
+        hook_path.write_text(script_content, encoding="utf-8")
 
         # Make executable on POSIX systems
         try:
@@ -191,7 +210,7 @@ def install_post_commit_hook(
         hooks_target = git_dir / "hooks"
         hooks_target.mkdir(parents=True, exist_ok=True)
         hook_path = hooks_target / "post-commit"
-        hook_path.write_text(POST_COMMIT_HOOK_SCRIPT, encoding="utf-8")
+        hook_path.write_text(script_content, encoding="utf-8")
 
         try:
             current_mode = hook_path.stat().st_mode
