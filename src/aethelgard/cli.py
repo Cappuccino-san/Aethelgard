@@ -174,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 watch_paths=watch_targets,
                 db_path=args.db,
                 debounce_seconds=args.debounce,
+                ledger=ledger,
             )
             return 0
         if args.daemon_command == "service":

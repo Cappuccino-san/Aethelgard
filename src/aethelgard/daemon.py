@@ -20,10 +20,12 @@ def run_daemon(
     watch_paths: list[Path | str] | Path | str,
     db_path: Optional[Path | str] = None,
     debounce_seconds: float = 0.5,
+    ledger: Optional[Any] = None,
 ) -> None:
     """Run the passive capture daemon until interrupted by SIGINT or SIGTERM."""
     listener = PassiveFSListener(
         watch_paths=watch_paths,
+        ledger=ledger,
         db_path=db_path,
         debounce_seconds=debounce_seconds,
     )
