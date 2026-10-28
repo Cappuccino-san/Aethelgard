@@ -1,0 +1,16 @@
+[Unit]
+Description=Project Aethelgard Passive Cognitive Daemon
+Documentation=https://github.com/Cappuccino-san/Aethelgard
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/twin daemon start
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+Environment=AETHELGARD_DATA_DIR=%h/.local/share/aethelgard
+WorkingDirectory=%h
+
+[Install]
+WantedBy=default.target

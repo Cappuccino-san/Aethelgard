@@ -17,6 +17,20 @@ from .ranker import (
     HybridRRFRanker,
     hybrid_rrf_search,
 )
+from .daemon import run_daemon
+from .filters import filter_file_paths, is_ignored_path
+from .git_hook import (
+    capture_git_commit,
+    get_post_commit_hook_script,
+    install_post_commit_hook,
+)
+from .listener import PassiveFSListener
+from .mcp import create_mcp_server, get_mcp_server, run_stdio
+from .systemd import (
+    get_systemd_unit_content,
+    install_systemd_unit,
+    uninstall_systemd_unit,
+)
 from .views import (
     FTS5View,
     VectorView,
@@ -49,4 +63,25 @@ __all__ = [
     "generate_mock_embedding",
     "get_kuzu_db",
     "close_kuzu_db",
+    "create_mcp_server",
+    "get_mcp_server",
+    "mcp",
+    "run_stdio",
+    "is_ignored_path",
+    "filter_file_paths",
+    "capture_git_commit",
+    "install_post_commit_hook",
+    "get_post_commit_hook_script",
+    "PassiveFSListener",
+    "run_daemon",
+    "get_systemd_unit_content",
+    "install_systemd_unit",
+    "uninstall_systemd_unit",
 ]
+
+
+def __getattr__(name: str):
+    if name == "mcp":
+        return get_mcp_server()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+

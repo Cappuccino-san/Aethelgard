@@ -48,6 +48,41 @@ def main(argv: list[str] | None = None) -> int:
     search_p.add_argument("--lambda", dest="decay_lambda", type=float, default=0.0)
     search_p.add_argument("--no-superseded", action="store_true", help="Exclude superseded decisions")
 
+    # twin mcp
+    mcp_p = subparsers.add_parser("mcp", help="Run FastMCP bridge over stdio")
+    mcp_p.add_argument("--graph", type=Path, default=None, help="Path to graph.kuzu")
+
+    # twin serve (alias for mcp)
+    serve_p = subparsers.add_parser("serve", help="Run FastMCP bridge over stdio (alias for twin mcp)")
+    serve_p.add_argument("--graph", type=Path, default=None, help="Path to graph.kuzu")
+
+    # twin hook
+    hook_p = subparsers.add_parser("hook", help="Git hook management and execution")
+    hook_sub = hook_p.add_subparsers(dest="hook_command", required=True)
+
+    hook_pc = hook_sub.add_parser("post-commit", help="Execute post-commit hook capture")
+    hook_pc.add_argument("--repo", type=Path, default=None, help="Repository path")
+
+    hook_inst = hook_sub.add_parser("install", help="Install non-blocking post-commit hook")
+    hook_inst.add_argument("--global", dest="global_hook", action="store_true", help="Install globally")
+    hook_inst.add_argument("--dir", type=Path, default=None, help="Custom hooks directory")
+    hook_inst.add_argument("--repo", type=Path, default=None, help="Target repository path")
+
+    # twin daemon
+    daemon_p = subparsers.add_parser("daemon", help="Passive background daemon and systemd management")
+    daemon_sub = daemon_p.add_subparsers(dest="daemon_command", required=True)
+
+    daemon_start = daemon_sub.add_parser("start", help="Start passive capture daemon")
+    daemon_start.add_argument(
+        "--watch", action="append", dest="watch_paths", default=[], help="Directories to monitor"
+    )
+    daemon_start.add_argument("--debounce", type=float, default=0.5, help="Debounce duration in seconds")
+
+    daemon_svc = daemon_sub.add_parser("service", help="Manage systemd user service unit")
+    daemon_svc.add_argument("--install", action="store_true", help="Install systemd user service")
+    daemon_svc.add_argument("--print", action="store_true", help="Print systemd user service unit")
+    daemon_svc.add_argument("--watch-dir", type=str, default=None, help="Directory to configure in service")
+
     args = parser.parse_args(argv)
     ledger = Ledger(db_path=args.db)
     view = FTS5View(db_path=args.db)
@@ -100,6 +135,48 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(results, indent=2))
         return 0
+
+    if args.command in ("mcp", "serve"):
+        from .mcp import run_stdio
+
+        run_stdio(db_path=args.db, graph_path=args.graph)
+        return 0
+
+    if args.command == "hook":
+        from .git_hook import capture_git_commit, install_post_commit_hook
+
+        if args.hook_command == "post-commit":
+            capture_git_commit(repo_path=args.repo, db_path=args.db)
+            return 0
+        if args.hook_command == "install":
+            installed_path = install_post_commit_hook(
+                global_hook=args.global_hook,
+                hooks_dir=args.dir,
+                target_repo=args.repo,
+            )
+            print(json.dumps({"installed_hook": str(installed_path)}))
+            return 0
+
+    if args.command == "daemon":
+        from .daemon import run_daemon
+        from .systemd import get_systemd_unit_content, install_systemd_unit
+
+        if args.daemon_command == "start":
+            watch_targets = args.watch_paths or [Path.cwd()]
+            run_daemon(
+                watch_paths=watch_targets,
+                db_path=args.db,
+                debounce_seconds=args.debounce,
+            )
+            return 0
+        if args.daemon_command == "service":
+            if args.print:
+                print(get_systemd_unit_content(watch_dir=args.watch_dir))
+                return 0
+            if args.install:
+                path = install_systemd_unit(watch_dir=args.watch_dir)
+                print(json.dumps({"installed_service": str(path)}))
+                return 0
 
     return 1
 

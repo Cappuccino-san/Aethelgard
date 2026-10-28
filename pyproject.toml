@@ -9,10 +9,15 @@ dependencies = [
     "cryptography>=42.0.0",
     "sqlite-vec>=0.1.9",
     "kuzu>=0.11.0",
+    "mcp>=1.2.0,<2",
+    "watchdog>=6.0.0",
 ]
 
 [project.scripts]
 twin = "aethelgard.cli:main"
+aethelgard-mcp = "aethelgard.mcp:main"
+aethelgard-daemon = "aethelgard.daemon:main"
+aethelgard-hook = "aethelgard.git_hook:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -21,3 +26,8 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
