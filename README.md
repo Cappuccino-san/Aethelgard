@@ -166,7 +166,7 @@ flowchart TD
    - Filters superseded patterns by default ($\Psi_{\text{superseded}} = 0.0, \Psi_{\text{active}} = 1.0$) and applies configurable half-life exponential time decay ($e^{-\lambda \Delta t}$).
 
 5. **Passive Background Ingestion**:
-   - **Non-Blocking Git Hook**: Automatically captures commit hashes, messages, author identities, and file changes on `git commit`, strictly guaranteeing exit code 0 to protect commit workflow integrity.
+   - **Non-Blocking Git Hook**: Automatically captures commit hashes, messages, author identities, and file changes on `git commit`, strictly guaranteeing exit code 0 to protect commit workflow integrity. Installed locally in `.git/hooks/post-commit`.
    - **Passive Watchdog Daemon**: Monitors workspace file events with configurable debouncing, filtering out lockfiles, build artifacts, bytecode, and virtual environment directories.
 
 ---
