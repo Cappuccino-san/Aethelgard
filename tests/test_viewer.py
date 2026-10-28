@@ -16,6 +16,7 @@ from aethelgard.viewer import (
     AethelgardViewerServer,
     ViewerHTTPRequestHandler,
     generate_mermaid_graph,
+    get_available_event_types,
     get_event_detail,
     get_related_events,
     get_timeline_events,
@@ -96,6 +97,48 @@ def test_timeline_extraction(viewer_test_env):
         # Security invariant: NO raw signatures or public/private keys in timeline response
         assert "signature" not in ev
         assert "pub_key" not in ev
+
+
+def test_timeline_filtering(viewer_test_env):
+    db_path, *_ = viewer_test_env
+
+    # 1. Available types
+    types = get_available_event_types(db_path)
+    assert "decision" in types
+    assert "git_commit" in types
+    assert "note" in types
+
+    # 2. Filter by event_type
+    decisions = get_timeline_events(db_path, event_type="decision")
+    assert len(decisions) == 3
+    assert all(e["event_type"] == "decision" for e in decisions)
+    assert [e["seq"] for e in decisions] == [5, 2, 1]
+
+    commits = get_timeline_events(db_path, event_type="git_commit")
+    assert len(commits) == 1
+    assert commits[0]["seq"] == 4
+
+    empty = get_timeline_events(db_path, event_type="file_change")
+    assert len(empty) == 0
+
+    # 3. Filter by signed status
+    signed_events = get_timeline_events(db_path, signed="yes")
+    assert len(signed_events) == 1
+    assert signed_events[0]["seq"] == 5
+    assert signed_events[0]["signed"] is True
+
+    unsigned_events = get_timeline_events(db_path, signed="no")
+    assert len(unsigned_events) == 4
+    assert all(e["signed"] is False for e in unsigned_events)
+
+    # 4. Filter by both event_type and signed
+    signed_decisions = get_timeline_events(db_path, event_type="decision", signed="yes")
+    assert len(signed_decisions) == 1
+    assert signed_decisions[0]["seq"] == 5
+
+    unsigned_decisions = get_timeline_events(db_path, event_type="decision", signed="no")
+    assert len(unsigned_decisions) == 2
+    assert [e["seq"] for e in unsigned_decisions] == [2, 1]
 
 
 def test_event_detail_extraction(viewer_test_env):
@@ -242,6 +285,28 @@ def test_viewer_http_endpoints(viewer_test_env):
             assert 'href="/event/1"' in body
             assert 'href="/event/4"' in body
 
+        # 3b. GET /timeline with filters
+        req_tl_filtered = urllib.request.Request(f"{base_url}/timeline?type=decision&signed=yes")
+        with urllib.request.urlopen(req_tl_filtered) as resp:
+            assert resp.status == 200
+            body = resp.read().decode("utf-8")
+            assert "ADR-003: Signed Event Test" in body
+            assert "ADR-001" not in body
+            assert "Active Filter:" in body
+
+        # 3c. GET /search with filters
+        req_s_filtered = urllib.request.Request(f"{base_url}/search?q=Loopback&type=decision&signed=no")
+        with urllib.request.urlopen(req_s_filtered) as resp:
+            assert resp.status == 200
+            body = resp.read().decode("utf-8")
+            assert "ADR-001" in body
+
+        req_s_nomatch = urllib.request.Request(f"{base_url}/search?q=Loopback&type=file_change")
+        with urllib.request.urlopen(req_s_nomatch) as resp:
+            assert resp.status == 200
+            body = resp.read().decode("utf-8")
+            assert "No matching events found" in body
+
         # 4. GET /event/1 (ADR-001 Decision Detail View - Unsigned)
         req_d1 = urllib.request.Request(f"{base_url}/event/1")
         with urllib.request.urlopen(req_d1) as resp:
@@ -339,6 +404,53 @@ def test_viewer_http_endpoints(viewer_test_env):
             assert resp.status == 200
             data = json.loads(resp.read().decode("utf-8"))
             assert "flowchart TD" in data["mermaid"]
+
+        # 10b. API filtering: /api/timeline and /api/search with query params
+        with urllib.request.urlopen(f"{base_url}/api/timeline?type=decision") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) == 3
+            assert all(e["event_type"] == "decision" for e in data)
+
+        with urllib.request.urlopen(f"{base_url}/api/timeline?signed=yes") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) == 1
+            assert data[0]["seq"] == 5
+
+        with urllib.request.urlopen(f"{base_url}/api/timeline?signed=no") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) == 4
+
+        with urllib.request.urlopen(f"{base_url}/api/search?q=Loopback&type=decision") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) > 0
+            assert any(h["seq"] == 1 for h in data)
+
+        with urllib.request.urlopen(f"{base_url}/api/search?q=Loopback&type=file_change") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) == 0
+
+        with urllib.request.urlopen(f"{base_url}/api/search?q=Loopback&signed=no") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) > 0
+            assert all(h["seq"] != 5 for h in data)
+            assert any(h["seq"] == 1 for h in data)
+
+        with urllib.request.urlopen(f"{base_url}/api/search?q=Loopback&signed=yes") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) > 0
+            assert all(h["seq"] == 5 for h in data)
+
+        with urllib.request.urlopen(f"{base_url}/api/search?q=") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert len(data) == 0
 
         # 11. Security: Reject POST requests with 405 Method Not Allowed
         post_req = urllib.request.Request(
