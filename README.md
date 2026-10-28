@@ -2,6 +2,14 @@
 
 Sovereign Cognitive Twin & Cryptographic Provenance Engine.
 
+What is the significance?
+
+Foundation models are going to get cheaper, better, and more interchangeable. They commoditize. What doesn't commoditize is your context: the decisions you made, why you made them, what you rejected, what you tried, what actually happened when you ran it.
+
+Right now that context is scattered and fragile. It's in chat histories that reset, in markdown notes you forget to update, in Git commits with no reason attached, in your head. A new model starts from zero, guesses at your past, and hallucinates it confidently.
+
+Aethelgard is meant to fix that by keeping one local, verifiable record, and letting any model plug into it.
+
 This is the Gemini-built v1 code, packaged unchanged for Antigravity.
 
 ## Open in Antigravity
