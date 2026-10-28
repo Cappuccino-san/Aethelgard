@@ -1,8 +1,8 @@
 """Local read-only web viewer for Project Aethelgard.
 
 Strictly bound to 127.0.0.1 (local loopback only). Provides 5 core capabilities:
-  1. Hybrid RRF Search (/search): Reciprocal Rank Fusion with BM25, Vec, Graph ranks & supersession
-  2. Timeline (/timeline): Chronological recent events with seq, type, title/message, and signed (Yes/No)
+  1. Hybrid RRF Search (/search): Reciprocal Rank Fusion with BM25, Vec, Graph ranks, supersession & filters
+  2. Timeline (/timeline): Chronological recent events with seq, type, title/message, signed status & filters
   3. Decision & Event Detail View (/event/<seq>): Full payload, hash prefixes only, and related events
   4. Verify (/verify): Provenance verification status (BLAKE3 Merkle chain & Ed25519 signatures)
   5. Graph (/graph): Mermaid diagram from KùzuDB episodic decision nodes and edges
@@ -53,8 +53,42 @@ def extract_title_or_message(event_type: str, payload: dict[str, Any]) -> str:
         return str(payload)[:100]
 
 
-def get_timeline_events(db_path: Path | str, limit: int = 100) -> list[dict[str, Any]]:
-    """Retrieve recent events from SQLite ledger ordered by seq DESC.
+def get_available_event_types(db_path: Path | str) -> list[str]:
+    """Retrieve distinct event types recorded in the ledger, with standard fallback types."""
+    default_types = [
+        "decision",
+        "git_commit",
+        "file_change",
+        "note",
+        "execution_artifact",
+    ]
+    db_file = Path(db_path)
+    if not db_file.exists():
+        return default_types
+
+    discovered: set[str] = set(default_types)
+    try:
+        with sqlite3.connect(str(db_file)) as conn:
+            rows = conn.execute("SELECT DISTINCT event_type FROM events;").fetchall()
+            for r in rows:
+                if r[0]:
+                    discovered.add(str(r[0]))
+    except Exception:
+        pass
+    return sorted(list(discovered))
+
+
+def get_timeline_events(
+    db_path: Path | str,
+    limit: int = 100,
+    event_type: Optional[str] = None,
+    signed: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Retrieve recent events from SQLite ledger ordered by seq DESC, with optional filtering.
+
+    Parameters:
+      event_type: Specific event_type to filter (or None / "all" for all types).
+      signed: "yes" for signed events only, "no" for unsigned only, or "all" / None for both.
 
     Security Guarantee: Never outputs raw private keys, public keys, or full signature hexes.
     Only computes and returns `signed: True/False`.
@@ -63,19 +97,39 @@ def get_timeline_events(db_path: Path | str, limit: int = 100) -> list[dict[str,
     if not db_file.exists():
         return []
 
+    where_clauses = ["1=1"]
+    query_params: list[Any] = []
+
+    if event_type and event_type.strip().lower() not in ("all", ""):
+        where_clauses.append("event_type = ?")
+        query_params.append(event_type.strip())
+
+    if signed:
+        s_val = signed.strip().lower()
+        if s_val in ("yes", "true", "1"):
+            where_clauses.append(
+                "(signature IS NOT NULL AND length(signature) > 0 AND pub_key IS NOT NULL AND length(pub_key) > 0)"
+            )
+        elif s_val in ("no", "false", "0"):
+            where_clauses.append(
+                "(signature IS NULL OR length(signature) = 0 OR pub_key IS NULL OR length(pub_key) = 0)"
+            )
+
+    where_sql = " AND ".join(where_clauses)
+    query_params.append(limit)
+
     events: list[dict[str, Any]] = []
     with sqlite3.connect(str(db_file)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
+        sql = f"""
             SELECT seq, event_id, event_type, timestamp, payload,
                    (signature IS NOT NULL AND length(signature) > 0 AND pub_key IS NOT NULL AND length(pub_key) > 0) AS is_signed
             FROM events
+            WHERE {where_sql}
             ORDER BY seq DESC
             LIMIT ?;
-            """,
-            (limit,),
-        ).fetchall()
+        """
+        rows = conn.execute(sql, query_params).fetchall()
 
         for r in rows:
             raw_payload = r["payload"]
@@ -180,7 +234,6 @@ def get_related_events(
 
         # 1. Supersession chain (for decisions)
         if ev_type == "decision":
-            # What does this decision supersede? (Older decision)
             supersedes_id = payload.get("supersedes_id")
             if supersedes_id:
                 old_row = conn.execute(
@@ -207,8 +260,7 @@ def get_related_events(
                         }
                     )
 
-            # What superseded this decision? (Newer decision)
-            # Try KùzuDB first
+            # Query KùzuDB for decisions superseding this one
             try:
                 g = GraphView(db_path, graph_path=graph_path)
                 conn_k = g._get_connection()
@@ -244,8 +296,10 @@ def get_related_events(
             except Exception:
                 pass
 
-            # SQLite fallback (canonical RFC 8785 JSON has no space after colon)
-            if not any("SUPERSEDED BY" in item["relationship"] for item in supersession_chain):
+            # SQLite fallback for supersession check
+            if not any(
+                "SUPERSEDED BY" in item["relationship"] for item in supersession_chain
+            ):
                 newer_rows = conn.execute(
                     "SELECT seq, event_id, event_type, timestamp, payload FROM events WHERE event_type = 'decision' AND (payload LIKE ? OR payload LIKE ?);",
                     (f'%"supersedes_id":"{ev_id}"%', f'%"supersedes_id": "{ev_id}"%'),
@@ -273,7 +327,6 @@ def get_related_events(
         # 2. Events involving the same entities
         entity_names: list[tuple[str, str]] = []
 
-        # Attempt KùzuDB entity lookup
         try:
             g = GraphView(db_path, graph_path=graph_path)
             conn_k = g._get_connection()
@@ -287,7 +340,6 @@ def get_related_events(
         except Exception:
             pass
 
-        # Directly gather entities from payload
         if ev_type == "decision":
             for rej in payload.get("rejected", []):
                 if rej and (rej, "rejected_alternative") not in entity_names:
@@ -303,7 +355,6 @@ def get_related_events(
 
         seen_seqs: set[int] = {seq} if seq is not None else set()
 
-        # Try KùzuDB for other events sharing entities
         try:
             g = GraphView(db_path, graph_path=graph_path)
             conn_k = g._get_connection()
@@ -349,7 +400,6 @@ def get_related_events(
         except Exception:
             pass
 
-        # SQLite fallback matching entities
         if len(entity_events) < 5 and entity_names:
             for ent_name, ent_type_str in entity_names[:10]:
                 matches = conn.execute(
@@ -462,7 +512,6 @@ def generate_mermaid_graph(
     decisions: list[tuple[str, str]] = []
     supersedes: list[tuple[str, str]] = []
 
-    # 1. Attempt KùzuDB query
     kuzu_success = False
     try:
         g = GraphView(db_path, graph_path=graph_path)
@@ -482,7 +531,6 @@ def generate_mermaid_graph(
     except Exception:
         kuzu_success = False
 
-    # 2. Fallback to SQLite ledger if Kùzu is unavailable or locked on Windows
     if not kuzu_success or not decisions:
         try:
             with sqlite3.connect(str(db_path)) as sconn:
@@ -507,7 +555,6 @@ def generate_mermaid_graph(
         except Exception:
             pass
 
-    # 3. Format Mermaid flowchart TD syntax
     lines = ["flowchart TD"]
     if not decisions:
         lines.append('    Empty["No architectural decisions recorded in ledger"]')
@@ -681,7 +728,8 @@ main {
 
 .search-form {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.75rem;
   margin-bottom: 2rem;
 }
 .search-input {
@@ -698,6 +746,42 @@ main {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
 }
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+}
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.filter-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.filter-select {
+  background-color: #0b1120;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
+}
+.filter-select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
 .btn {
   background-color: var(--primary);
   color: #fff;
@@ -882,21 +966,103 @@ def render_page(title: str, active_tab: str, content_html: str) -> str:
 """
 
 
-def render_search_page(db_path: Path | str, query: str = "") -> str:
-    """Render Search View: input form and 3-way hybrid RRF ranking results."""
+def render_search_page(
+    db_path: Path | str,
+    query: str = "",
+    event_type: Optional[str] = None,
+    signed: Optional[str] = None,
+) -> str:
+    """Render Search View: input form, type & signed filters, and 3-way hybrid RRF ranking results."""
     clean_q = query.strip()
+    curr_type = (event_type or "").strip()
+    curr_signed = (signed or "all").strip().lower()
+
+    available_types = get_available_event_types(db_path)
+
+    # Options for Type filter
+    type_options = [
+        '<option value="all"'
+        + (" selected" if not curr_type or curr_type.lower() == "all" else "")
+        + ">All Event Types</option>"
+    ]
+    for t in available_types:
+        sel = " selected" if curr_type.lower() == t.lower() else ""
+        type_options.append(
+            f'<option value="{html.escape(t)}"{sel}>{html.escape(t)}</option>'
+        )
+    type_select_html = "".join(type_options)
+
+    # Options for Signed filter
+    signed_options = [
+        f'<option value="all"{" selected" if curr_signed == "all" else ""}>All (Signed & Unsigned)</option>',
+        f'<option value="yes"{" selected" if curr_signed == "yes" else ""}>Signed (Yes)</option>',
+        f'<option value="no"{" selected" if curr_signed == "no" else ""}>Unsigned (No)</option>',
+    ]
+    signed_select_html = "".join(signed_options)
+
     results_html = ""
 
     if clean_q:
         try:
             ranker = HybridRRFRanker(db_path=db_path)
-            hits = ranker.search(query=clean_q, limit=25)
-            if hits:
+            raw_hits = ranker.search(query=clean_q, limit=50)
+
+            # Retrieve signed status for candidate hits from SQLite
+            hit_seqs = [h["seq"] for h in raw_hits if "seq" in h]
+            signed_map: dict[int, bool] = {}
+            if hit_seqs:
+                with sqlite3.connect(str(db_path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    placeholders = ",".join("?" for _ in hit_seqs)
+                    rows = conn.execute(
+                        f"""SELECT seq,
+                                  (signature IS NOT NULL AND length(signature) > 0 AND pub_key IS NOT NULL AND length(pub_key) > 0) AS is_signed
+                           FROM events
+                           WHERE seq IN ({placeholders});""",
+                        hit_seqs,
+                    ).fetchall()
+                    signed_map = {r["seq"]: bool(r["is_signed"]) for r in rows}
+
+            # Filter hits by event_type
+            filtered_hits = raw_hits
+            if curr_type and curr_type.lower() not in ("all", ""):
+                filtered_hits = [
+                    h
+                    for h in filtered_hits
+                    if str(h.get("event_type", "")).lower() == curr_type.lower()
+                ]
+
+            # Filter hits by signed status
+            if curr_signed in ("yes", "true", "1"):
+                filtered_hits = [
+                    h
+                    for h in filtered_hits
+                    if signed_map.get(h.get("seq"), False) is True
+                ]
+            elif curr_signed in ("no", "false", "0"):
+                filtered_hits = [
+                    h
+                    for h in filtered_hits
+                    if signed_map.get(h.get("seq"), False) is False
+                ]
+
+            if filtered_hits:
+                filter_desc = []
+                if curr_type and curr_type.lower() != "all":
+                    filter_desc.append(f"Type: {html.escape(curr_type)}")
+                if curr_signed != "all":
+                    filter_desc.append(
+                        f"Signed: {'Yes' if curr_signed == 'yes' else 'No'}"
+                    )
+                filter_suffix = (
+                    f" (Filters: {', '.join(filter_desc)})" if filter_desc else ""
+                )
+
                 results_html += (
                     f'<p style="margin-bottom:1rem; color:var(--text-muted);">'
-                    f'Found <strong>{len(hits)}</strong> results for "<strong>{html.escape(clean_q)}</strong>":</p>'
+                    f'Found <strong>{len(filtered_hits)}</strong> results for "<strong>{html.escape(clean_q)}</strong>"{filter_suffix}:</p>'
                 )
-                for h in hits:
+                for h in filtered_hits:
                     ev_type = h.get("event_type", "unknown")
                     payload = h.get("payload", {})
                     title = extract_title_or_message(ev_type, payload)
@@ -908,6 +1074,7 @@ def render_search_page(db_path: Path | str, query: str = "") -> str:
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
                         "%Y-%m-%d %H:%M:%S UTC"
                     )
+                    is_hit_signed = signed_map.get(seq, False)
 
                     bm25_str = (
                         f"#{ranks.get('BM25')}"
@@ -940,8 +1107,12 @@ def render_search_page(db_path: Path | str, query: str = "") -> str:
                         if is_sup
                         else '<span class="badge badge-active">Active</span>'
                     )
+                    hit_signed_badge = (
+                        '<span class="badge badge-signed">&#10003; Yes</span>'
+                        if is_hit_signed
+                        else '<span class="badge badge-unsigned">&#10007; No</span>'
+                    )
 
-                    # Context details
                     details_block = ""
                     if ev_type == "decision":
                         ctx = payload.get("context", "")
@@ -975,6 +1146,7 @@ def render_search_page(db_path: Path | str, query: str = "") -> str:
                           <span class="badge {type_badge_cls}">{html.escape(ev_type)}</span>
                           <h3 class="card-title"><a href="/event/{seq}">{html.escape(title)}</a></h3>
                           {sup_badge}
+                          {hit_signed_badge}
                         </div>
                         <div style="display:flex; align-items:center; gap:0.5rem;">
                           <span class="score-pill">Score: {score:.8f}</span>
@@ -998,7 +1170,7 @@ def render_search_page(db_path: Path | str, query: str = "") -> str:
                 results_html = f"""
                 <div class="card" style="text-align:center; padding:3rem 1rem;">
                   <p style="color:var(--text-muted); font-size:1.1rem;">No matching events found for "<strong>{html.escape(clean_q)}</strong>"</p>
-                  <p style="color:#64748b; font-size:0.9rem; margin-top:0.5rem;">Try searching for architectural terms, ADR numbers, or commit messages.</p>
+                  <p style="color:#64748b; font-size:0.9rem; margin-top:0.5rem;">Try adjusting your query or resetting event type / signed filters.</p>
                 </div>
                 """
         except Exception as e:
@@ -1012,7 +1184,7 @@ def render_search_page(db_path: Path | str, query: str = "") -> str:
         results_html = """
         <div class="card" style="text-align:center; padding:3rem 1rem;">
           <p style="color:var(--text-muted); font-size:1.1rem;">Enter a query above to execute 3-Way Reciprocal Rank Fusion.</p>
-          <p style="color:#64748b; font-size:0.9rem; margin-top:0.5rem;">Fuses lexical BM25 (FTS5), 768d semantic vectors (sqlite-vec), and episodic graph nodes (KùzuDB) with supersession penalty.</p>
+          <p style="color:#64748b; font-size:0.9rem; margin-top:0.5rem;">Fuses lexical BM25 (FTS5), 768d semantic vectors (sqlite-vec), and episodic graph nodes (KùzuDB) with supersession and signed filters.</p>
         </div>
         """
 
@@ -1022,17 +1194,75 @@ def render_search_page(db_path: Path | str, query: str = "") -> str:
       <p style="color:var(--text-muted);">Unified 3-Way Reciprocal Rank Fusion search across lexical, semantic vector, and episodic graph views.</p>
     </div>
     <form class="search-form" method="get" action="/search">
-      <input type="text" name="q" class="search-input" value="{html.escape(clean_q)}" placeholder="Search decisions, commits, notes, artifacts (e.g. SQLite, ADR-001, signing)..." autofocus>
-      <button type="submit" class="btn">Search</button>
+      <div style="display:flex; gap:0.5rem;">
+        <input type="text" name="q" class="search-input" value="{html.escape(clean_q)}" placeholder="Search decisions, commits, notes, artifacts (e.g. SQLite, ADR-001, signing)..." autofocus>
+        <button type="submit" class="btn">Search</button>
+      </div>
+      <div class="filter-bar" style="margin-bottom:0; padding:0.5rem 0.75rem;">
+        <div class="filter-group">
+          <label class="filter-label" for="srch-type">Filter Type:</label>
+          <select id="srch-type" name="type" class="filter-select">
+            {type_select_html}
+          </select>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label" for="srch-signed">Signed Status:</label>
+          <select id="srch-signed" name="signed" class="filter-select">
+            {signed_select_html}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-sm">Apply Filters</button>
+        <a href="/search" class="btn btn-sm" style="background:#334155;">Reset</a>
+      </div>
     </form>
     {results_html}
     """
     return render_page("Hybrid RRF Search", "search", content)
 
 
-def render_timeline_page(db_path: Path | str) -> str:
-    """Render Timeline View: chronological events by seq with type, title/message, and signed (Yes/No)."""
-    events = get_timeline_events(db_path, limit=100)
+def render_timeline_page(
+    db_path: Path | str,
+    event_type: Optional[str] = None,
+    signed: Optional[str] = None,
+) -> str:
+    """Render Timeline View: chronological events by seq with type, title/message, signed (Yes/No), and filters."""
+    curr_type = (event_type or "").strip()
+    curr_signed = (signed or "all").strip().lower()
+
+    events = get_timeline_events(
+        db_path, limit=100, event_type=curr_type, signed=curr_signed
+    )
+    available_types = get_available_event_types(db_path)
+
+    # Build options for Type select
+    type_options = [
+        '<option value="all"'
+        + (" selected" if not curr_type or curr_type.lower() == "all" else "")
+        + ">All Event Types</option>"
+    ]
+    for t in available_types:
+        sel = " selected" if curr_type.lower() == t.lower() else ""
+        type_options.append(
+            f'<option value="{html.escape(t)}"{sel}>{html.escape(t)}</option>'
+        )
+    type_select_html = "".join(type_options)
+
+    # Build options for Signed select
+    signed_options = [
+        f'<option value="all"{" selected" if curr_signed == "all" else ""}>All (Signed & Unsigned)</option>',
+        f'<option value="yes"{" selected" if curr_signed == "yes" else ""}>Signed (Yes)</option>',
+        f'<option value="no"{" selected" if curr_signed == "no" else ""}>Unsigned (No)</option>',
+    ]
+    signed_select_html = "".join(signed_options)
+
+    active_filters = []
+    if curr_type and curr_type.lower() != "all":
+        active_filters.append(f"Type: {html.escape(curr_type)}")
+    if curr_signed in ("yes", "no"):
+        active_filters.append(f"Signed: {'Yes' if curr_signed == 'yes' else 'No'}")
+    active_filter_html = ""
+    if active_filters:
+        active_filter_html = f'<div style="margin-bottom:0.75rem; font-size:0.85rem; color:var(--text-muted);">Active Filter: <strong>{", ".join(active_filters)}</strong></div>'
 
     rows_html = ""
     for ev in events:
@@ -1040,7 +1270,7 @@ def render_timeline_page(db_path: Path | str) -> str:
         ev_type = ev["event_type"]
         title = ev["title"]
         dt = ev["datetime"]
-        signed = ev["signed"]
+        ev_signed = ev["signed"]
 
         type_badge_cls = (
             f"badge-{ev_type}"
@@ -1054,7 +1284,7 @@ def render_timeline_page(db_path: Path | str) -> str:
 
         signed_badge = (
             '<span class="badge badge-signed">&#10003; Yes</span>'
-            if signed
+            if ev_signed
             else '<span class="badge badge-unsigned">&#10007; No</span>'
         )
 
@@ -1069,13 +1299,36 @@ def render_timeline_page(db_path: Path | str) -> str:
         """
 
     if not rows_html:
-        rows_html = '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--text-muted);">No events found in ledger.</td></tr>'
+        rows_html = '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--text-muted);">No matching events found. Try adjusting your filters.</td></tr>'
 
     content = f"""
     <div style="margin-bottom:1.5rem;">
       <h1 style="font-size:1.75rem; font-weight:700; margin-bottom:0.5rem;">Event Timeline</h1>
       <p style="color:var(--text-muted);">Immutable audit trail of recent events by sequence number with cryptographic signature status.</p>
     </div>
+
+    <!-- Timeline Filters Bar -->
+    <form class="filter-bar" method="get" action="/timeline">
+      <div class="filter-group">
+        <label class="filter-label" for="tl-type">Event Type:</label>
+        <select id="tl-type" name="type" class="filter-select">
+          {type_select_html}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="tl-signed">Signed Status:</label>
+        <select id="tl-signed" name="signed" class="filter-select">
+          {signed_select_html}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-sm">Filter</button>
+      <a href="/timeline" class="btn btn-sm" style="background:#334155;">Reset</a>
+      <span style="font-size:0.85rem; color:var(--text-muted); margin-left:auto;">
+        Showing <strong>{len(events)}</strong> event(s)
+      </span>
+    </form>
+    {active_filter_html}
+
     <div class="card" style="padding:0; overflow:hidden;">
       <table>
         <thead>
@@ -1141,7 +1394,6 @@ def render_event_detail_page(
         rejected_list = payload.get("rejected", [])
         sup_id = payload.get("supersedes_id")
 
-        # Superseded by calculation
         superseded_by_list = [
             item
             for item in related["supersession_chain"]
@@ -1153,7 +1405,6 @@ def render_event_detail_page(
             if "SUPERSEDES" in item["relationship"]
         ]
 
-        # Superseded status badge
         decision_status_badge = (
             '<span class="badge badge-superseded">Superseded</span>'
             if superseded_by_list
@@ -1169,16 +1420,18 @@ def render_event_detail_page(
         else:
             rej_html = '<span style="color:var(--text-muted);">None specified</span>'
 
-        # Supersedes link
-        sup_link_html = '<span style="color:var(--text-muted);">None (Root decision)</span>'
+        sup_link_html = (
+            '<span style="color:var(--text-muted);">None (Root decision)</span>'
+        )
         if supersedes_older_list:
             older = supersedes_older_list[0]
             sup_link_html = f'<a href="/event/{older["seq"]}" style="color:var(--primary); font-weight:600;">#{older["seq"]} &mdash; {html.escape(older["title"])}</a>'
         elif sup_id:
             sup_link_html = f'<span style="font-family:monospace; color:var(--text-muted);">{html.escape(str(sup_id)[:12])}...</span>'
 
-        # What superseded it link
-        superseded_by_html = '<span style="color:#34d399; font-weight:600;">None (Current & Active)</span>'
+        superseded_by_html = (
+            '<span style="color:#34d399; font-weight:600;">None (Current & Active)</span>'
+        )
         if superseded_by_list:
             newer = superseded_by_list[0]
             superseded_by_html = f'<a href="/event/{newer["seq"]}" style="color:#f87171; font-weight:600;">Superseded by #{newer["seq"]} &mdash; {html.escape(newer["title"])}</a>'
@@ -1225,7 +1478,6 @@ def render_event_detail_page(
     elif ev_type == "git_commit":
         commit_msg = payload.get("message", "")
         author = payload.get("author", "")
-        committer = payload.get("committer", "")
         branch = payload.get("branch", "")
         repo_path = payload.get("repo_path", "")
         files = payload.get("files", [])
@@ -1392,7 +1644,6 @@ def render_event_detail_page(
         """
 
     # 2. Related Events Section
-    # A. Supersession Chain
     supersession_html = ""
     if related["supersession_chain"]:
         chain_cards = []
@@ -1415,7 +1666,6 @@ def render_event_detail_page(
     elif ev_type == "decision":
         supersession_html = '<p style="color:var(--text-muted); font-size:0.9rem;">No supersession relationships recorded (Root decision).</p>'
 
-    # B. Shared Entity Events
     entity_events_html = ""
     if related["entity_events"]:
         ent_cards = []
@@ -1449,7 +1699,6 @@ def render_event_detail_page(
     else:
         entity_events_html = '<p style="color:var(--text-muted); font-size:0.9rem;">No other events currently share entities with this event.</p>'
 
-    # C. Git Commit Files & Repo Related
     commit_rel_html = ""
     if ev_type == "git_commit" and related.get("commit_details"):
         cd = related["commit_details"]
@@ -1714,11 +1963,23 @@ class ViewerHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         # 1. HTML Pages
         if path in ("/", "/search"):
             q = params.get("q", [""])[0]
-            self.send_html(render_search_page(self.server.db_path, query=q))
+            t = params.get("type", [""])[0]
+            s = params.get("signed", [""])[0]
+            self.send_html(
+                render_search_page(
+                    self.server.db_path, query=q, event_type=t, signed=s
+                )
+            )
             return
 
         if path == "/timeline":
-            self.send_html(render_timeline_page(self.server.db_path))
+            t = params.get("type", [""])[0]
+            s = params.get("signed", [""])[0]
+            self.send_html(
+                render_timeline_page(
+                    self.server.db_path, event_type=t, signed=s
+                )
+            )
             return
 
         if path == "/verify":
@@ -1770,16 +2031,58 @@ class ViewerHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         # 2. JSON APIs (strictly sanitized; no keys, signatures, or downloads)
         if path == "/api/search":
             q = params.get("q", [""])[0]
+            t = params.get("type", [""])[0]
+            s = params.get("signed", [""])[0]
             if not q:
                 self.send_json([])
                 return
             ranker = HybridRRFRanker(db_path=self.server.db_path)
-            hits = ranker.search(query=q, limit=50)
-            self.send_json(hits)
+            raw_hits = ranker.search(query=q, limit=50)
+
+            # Check signed status
+            hit_seqs = [h["seq"] for h in raw_hits if "seq" in h]
+            signed_map: dict[int, bool] = {}
+            if hit_seqs:
+                with sqlite3.connect(str(self.server.db_path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    placeholders = ",".join("?" for _ in hit_seqs)
+                    rows = conn.execute(
+                        f"""SELECT seq,
+                                  (signature IS NOT NULL AND length(signature) > 0 AND pub_key IS NOT NULL AND length(pub_key) > 0) AS is_signed
+                           FROM events WHERE seq IN ({placeholders});""",
+                        hit_seqs,
+                    ).fetchall()
+                    signed_map = {r["seq"]: bool(r["is_signed"]) for r in rows}
+
+            filtered = raw_hits
+            if t and t.lower() not in ("all", ""):
+                filtered = [
+                    h
+                    for h in filtered
+                    if str(h.get("event_type", "")).lower() == t.lower()
+                ]
+            if s in ("yes", "true", "1"):
+                filtered = [
+                    h
+                    for h in filtered
+                    if signed_map.get(h.get("seq"), False) is True
+                ]
+            elif s in ("no", "false", "0"):
+                filtered = [
+                    h
+                    for h in filtered
+                    if signed_map.get(h.get("seq"), False) is False
+                ]
+
+            self.send_json(filtered)
             return
 
         if path == "/api/timeline":
-            events = get_timeline_events(self.server.db_path, limit=100)
+            t = params.get("type", [""])[0]
+            s = params.get("signed", [""])[0]
+            events = get_timeline_events(
+                self.server.db_path, limit=100, event_type=t, signed=s
+            )
             self.send_json(events)
             return
 
@@ -1801,7 +2104,9 @@ class ViewerHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                     self.send_json({"event": detail, "related": rel})
                     return
                 else:
-                    self.send_json({"error": f"Event #{seq_val} not found"}, status_code=404)
+                    self.send_json(
+                        {"error": f"Event #{seq_val} not found"}, status_code=404
+                    )
                     return
 
         if path == "/api/verify":
