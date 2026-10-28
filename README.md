@@ -34,7 +34,112 @@ What it is not, honestly:
 It's tamper-evident, not tamper-proof. If someone has both your ledger and your key on the same machine, they could rewrite and re-sign. It doesn't prove who you are to the outside world, and its timestamps are local, not trusted time. That's why the backups matter, and why verify is about detecting middle edits, not claiming absolute proof.
 
 In short: models will come and go. Aethelgard is the part that stays, remembers, and can prove what it remembers.
-This is the Gemini-built v1 code, packaged unchanged for Antigravity.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph Clients["Clients & Ingestion Sources"]
+        CLI["twin CLI"]
+        Agent["Autonomous Agent / IDE"]
+        GitHook["Git Post-Commit Hook"]
+        Daemon["Watchdog Daemon (PassiveFSListener)"]
+    end
+
+    subgraph MCPLayer["FastMCP Server Bridge (5 Canonical Tools)"]
+        direction TB
+        MCP_Recall["recall_context"]
+        MCP_Commit["commit_decision"]
+        MCP_Trace["trace_entity_history"]
+        MCP_Log["log_execution_artifact"]
+        MCP_Verify["verify_provenance"]
+    end
+
+    subgraph Security["Privacy & Cryptographic Invariants"]
+        Airlock["Privacy Airlock (scrub_payload & entropy scan)"]
+        KeyStore["Persistent Ed25519 Key (ed25519.pem outside Git/Ledger)"]
+    end
+
+    subgraph Storage["Immutable Storage Layer"]
+        Ledger["SQLite WAL Ledger (ledger.db)
+        • RFC 8785 Canonical JSON
+        • BLAKE3 Merkle Chain H_n = BLAKE3(H_{n-1} || Payload)
+        • Ed25519 Cryptographic Signatures"]
+    end
+
+    subgraph Views["Disposable Materialized Views (Decoupled & Rebuildable)"]
+        FTS5["Lexical View (SQLite FTS5 BM25)"]
+        VecView["Semantic View (sqlite-vec 768d via Ollama nomic-embed-text)"]
+        Kuzu["Episodic Graph View (KùzuDB Property Graph)"]
+    end
+
+    subgraph Retrieval["3-Way Hybrid Retrieval"]
+        RRF["Hybrid RRF Ranker
+        • Reciprocal Rank Fusion (BM25 + Vec + Graph)
+        • Status Weighting (Psi active vs superseded)
+        • Half-life Exponential Time Decay"]
+    end
+
+    %% Client Interactions
+    Agent -->|JSON-RPC stdio| MCPLayer
+    CLI -->|Commands| Airlock
+    CLI -->|twin search| RRF
+    CLI -->|twin verify| Ledger
+
+    %% Ingestion flows into Airlock
+    GitHook -->|Filtered commit metadata| Airlock
+    Daemon -->|Debounced file changes| Airlock
+    MCP_Commit -->|Decision payload| Airlock
+    MCP_Log -->|Execution artifact| Airlock
+
+    %% Airlock & Signing into Ledger
+    Airlock -->|Canonical scrubbed payload| Ledger
+    KeyStore -->|Ed25519 Signing Key| Ledger
+
+    %% Ledger updates Views
+    Ledger -.->|Sync & Rebuild| FTS5
+    Ledger -.->|Sync & Rebuild| VecView
+    Ledger -.->|Sync & Rebuild| Kuzu
+
+    %% RRF Queries Views
+    FTS5 -->|Lexical Ranks| RRF
+    VecView -->|Cosine Similarity Ranks| RRF
+    Kuzu -->|Topology & Lineage| RRF
+    MCP_Recall -->|3-Way Hybrid Query| RRF
+    MCP_Trace -->|Graph Traversal| Kuzu
+    MCP_Verify -->|Merkle & Sig Audit| Ledger
+```
+
+### Architectural Subsystems
+
+1. **Model Context Protocol (MCP) Bridge**:
+   - Exposes 5 canonical tools over standard I/O (`stdio`): `recall_context`, `commit_decision`, `trace_entity_history`, `log_execution_artifact`, and `verify_provenance`.
+   - Bridges autonomous IDE agents directly to Aethelgard's cognitive store.
+
+2. **Privacy Airlock & Cryptographic Ledger**:
+   - **Privacy Airlock**: Sanitizes and scrubs high-entropy tokens, API keys, private credentials, and personal information before persistence.
+   - **Canonicalization**: Invariant payload formatting following RFC 8785 canonical JSON.
+   - **BLAKE3 Merkle Chain**: Every record forms a continuous Merkle hash chain: $H_n = \text{BLAKE3}(H_{n-1} \parallel \text{Payload})$.
+   - **Persistent Ed25519 Signatures**: Host-level signing key persisted in `~/.local/share/aethelgard/ed25519.pem` (outside Git and the database) signs every committed event.
+
+3. **Decoupled Disposable Views**:
+   - **Lexical View (SQLite FTS5)**: Fast BM25 keyword search over identifiers, code tokens, and error strings.
+   - **Semantic View (sqlite-vec)**: 768-dimensional dense vector embeddings generated via Ollama (`nomic-embed-text`) with deterministic mock fallback.
+   - **Episodic Graph View (KùzuDB)**: Property graph tracking architectural decisions (`Decision`), executions (`ExecutionArtifact`), and `SUPERSEDES` relationships.
+   - *Disposable Invariant*: All views can be dropped and rebuilt from the immutable ledger at any time via `twin rebuild-views`.
+
+4. **3-Way Hybrid Reciprocal Rank Fusion (RRF)**:
+   - Combines lexical (BM25), semantic vector, and graph traversal rankings using Reciprocal Rank Fusion:
+     $$\text{RRF}(d) = \sum_{c \in \{\text{BM25}, \text{Vec}, \text{Graph}\}} \frac{w_c}{k + r_c(d)} \cdot \Psi(d) \cdot e^{-\lambda \Delta t}$$
+   - Filters superseded patterns by default ($\Psi_{\text{superseded}} = 0.0, \Psi_{\text{active}} = 1.0$) and applies configurable half-life exponential time decay ($e^{-\lambda \Delta t}$).
+
+5. **Passive Background Ingestion**:
+   - **Non-Blocking Git Hook**: Automatically captures commit hashes, messages, author identities, and file changes on `git commit`, strictly guaranteeing exit code 0 to protect commit workflow integrity.
+   - **Passive Watchdog Daemon**: Monitors workspace file events with configurable debouncing, filtering out lockfiles, build artifacts, bytecode, and virtual environment directories.
+
+---
 
 ## Open in Antigravity
 
@@ -67,9 +172,18 @@ Default ledger location is `~/.local/share/aethelgard/ledger.db`. Use `--db <pat
 
 ## Layout
 
-- `src/aethelgard/airlock.py` - secret scrubber
-- `src/aethelgard/canonical.py` - RFC 8785 canonical JSON
-- `src/aethelgard/ledger.py` - BLAKE3 chain, Ed25519, SQLite WAL ledger
-- `src/aethelgard/views.py` - decoupled FTS5 view, rebuildable from the ledger
-- `src/aethelgard/cli.py` - `twin` CLI
-- `tests/test_aethelgard.py` - 5 tests
+- `src/aethelgard/airlock.py` - Privacy Airlock & high-entropy secret scrubber
+- `src/aethelgard/canonical.py` - RFC 8785 canonical JSON serializer
+- `src/aethelgard/ledger.py` - SQLite WAL ledger, BLAKE3 Merkle chain, persistent Ed25519 signing
+- `src/aethelgard/views.py` - Decoupled FTS5 and sqlite-vec materialized views
+- `src/aethelgard/embeddings.py` - Ollama `nomic-embed-text` embeddings with deterministic fallback
+- `src/aethelgard/graph.py` - KùzuDB embedded property graph
+- `src/aethelgard/ranker.py` - 3-way hybrid Reciprocal Rank Fusion (RRF) engine
+- `src/aethelgard/mcp.py` - FastMCP stdio bridge (5 canonical tools)
+- `src/aethelgard/filters.py` - Artifact, lockfile, and virtualenv path filtering
+- `src/aethelgard/git_hook.py` - Non-blocking git post-commit hook ingestion
+- `src/aethelgard/listener.py` - Watchdog filesystem listener with debounce dispatch
+- `src/aethelgard/daemon.py` - Passive background capture daemon
+- `src/aethelgard/systemd.py` - Systemd user service unit generator
+- `src/aethelgard/cli.py` - `twin` unified CLI entrypoint
+- `tests/` - Comprehensive test suite (32 unit & integration tests)
