@@ -23,6 +23,7 @@ MCP: that's the plug. Antigravity today, any other agent tomorrow, can call reca
 
 Hook and daemon: passive capture, so you don't have to remember to log. A git commit becomes a git_commit event automatically, a file change becomes a file_change event, without you writing a note.
 
+
 A concrete example:
 
 In 2026 you decide to use persistent signing over unsigned events, and you reject plain markdown notes. In 2029 you ask a totally different model, "why do we sign events?" It shouldn't guess. It should recall that exact decision, show you the rejected alternatives, show you that ADR-003 superseded the earlier unsigned approach, and show you verify still passes for that chain.
@@ -34,6 +35,35 @@ What it is not, honestly:
 It's tamper-evident, not tamper-proof. If someone has both your ledger and your key on the same machine, they could rewrite and re-sign. It doesn't prove who you are to the outside world, and its timestamps are local, not trusted time. That's why the backups matter, and why verify is about detecting middle edits, not claiming absolute proof.
 
 In short: models will come and go. Aethelgard is the part that stays, remembers, and can prove what it remembers.
+
+
+Imagine you have a magic notebook.
+
+1. You write in it, and no one can secretly change it.
+Every time you make a choice, like "we will sign our pages from now on," you write it on a new page. That page gets glued to the page before it with a special secret sticker code. If someone tries to change a page in the middle, the sticker codes won't match anymore, and you can tell.
+
+You also stamp each new page with your own secret stamp, which you keep in a different drawer, not in the notebook. So people can check, "yep, that's Nick's stamp."
+
+Old pages never get torn out. If you change your mind, you just write a new page that says "this replaces that old page." The old page stays, but it gets a little less important.
+
+2. Little helpers write in it for you.
+You don't have to remember to write everything down. When you save your code, a little helper whispers, "he just saved code," and writes it down. When you change a file, another helper whispers, "he just changed that file," and writes it down.
+
+3. When you ask a question, it finds the right pages three ways.
+Say you ask, "why do we sign things?"
+
+First, it looks for the exact words.
+Second, it looks for the meaning, even if you said it in different words, like "stamps" instead of "signing."
+Third, it looks at friends. Like, this choice is friends with that project, and that project is friends with this other choice.
+
+Then it puts those three lists together and gives you the best pages, with the newest, not-crossed-out ones first.
+
+4. Robot friends can talk to the notebook.
+Your robot friend in Antigravity doesn't have to guess what you did last week. It can just ask the notebook, "hey, what did Nick decide about signing?" and the notebook answers with the real pages, not a made-up story.
+
+And the notebook lives in your house, on your computer, not in someone else's cloud. So it's yours, even if the robot friend changes later.
+
+That's it. A notebook that remembers, proves it didn't get changed, and can answer questions about what you did and why.
 
 ---
 
