@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .graph import GraphView, commit_decision
-from .ledger import DEFAULT_DATA_DIR, Ledger
+from .ledger import DEFAULT_DATA_DIR, Ledger, load_or_create_signing_key
 from .views import FTS5View, VectorView, rebuild_views
 
 
@@ -17,6 +17,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_DATA_DIR / "ledger.db",
         help="Path to ledger.db",
+    )
+    parser.add_argument(
+        "--key",
+        type=Path,
+        default=None,
+        help="Path to Ed25519 signing key (defaults to ~/.local/share/aethelgard/ed25519.pem)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -84,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     daemon_svc.add_argument("--watch-dir", type=str, default=None, help="Directory to configure in service")
 
     args = parser.parse_args(argv)
-    ledger = Ledger(db_path=args.db)
+    signing_key = load_or_create_signing_key(args.key)
+    ledger = Ledger(db_path=args.db, signing_key=signing_key)
     view = FTS5View(db_path=args.db)
     vec_view = VectorView(db_path=args.db)
     graph_view = GraphView(db_path=args.db)
@@ -139,14 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in ("mcp", "serve"):
         from .mcp import run_stdio
 
-        run_stdio(db_path=args.db, graph_path=args.graph)
+        run_stdio(db_path=args.db, graph_path=args.graph, signing_key=signing_key)
         return 0
 
     if args.command == "hook":
         from .git_hook import capture_git_commit, install_post_commit_hook
 
         if args.hook_command == "post-commit":
-            capture_git_commit(repo_path=args.repo, db_path=args.db)
+            capture_git_commit(repo_path=args.repo, db_path=args.db, ledger=ledger)
             return 0
         if args.hook_command == "install":
             installed_path = install_post_commit_hook(

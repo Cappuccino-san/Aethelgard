@@ -1,5 +1,6 @@
 """Subsystem Layer 2 & 3: Immutable SQLite WAL Ledger & BLAKE3 + Ed25519 Provenance Chain."""
 
+import os
 import sqlite3
 import time
 import uuid
@@ -8,6 +9,7 @@ from typing import Any, Optional
 
 from blake3 import blake3
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -17,7 +19,45 @@ from .airlock import scrub_payload
 from .canonical import canonicalize_json
 
 DEFAULT_DATA_DIR = Path.home() / ".local" / "share" / "aethelgard"
+DEFAULT_KEY_PATH = DEFAULT_DATA_DIR / "ed25519.pem"
 GENESIS_HASH = "0" * 64
+
+
+def load_or_create_signing_key(
+    key_path: Optional[Path | str] = None,
+) -> Ed25519PrivateKey:
+    """Load persistent Ed25519 signing key or generate once outside Git and ledger.
+
+    Loads the same key on every startup to ensure signing persistence across runs
+    without regenerating keys.
+    """
+    if key_path is not None:
+        target_path = Path(key_path)
+    elif "AETHELGARD_KEY_PATH" in os.environ:
+        target_path = Path(os.environ["AETHELGARD_KEY_PATH"])
+    elif "AETHELGARD_SIGNING_KEY" in os.environ:
+        target_path = Path(os.environ["AETHELGARD_SIGNING_KEY"])
+    else:
+        target_path = DEFAULT_KEY_PATH
+
+    if target_path.exists():
+        pem_bytes = target_path.read_bytes()
+        return serialization.load_pem_private_key(pem_bytes, password=None)  # type: ignore[return-value]
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    key = Ed25519PrivateKey.generate()
+    pem_bytes = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    target_path.write_bytes(pem_bytes)
+    try:
+        target_path.chmod(0o600)
+    except OSError:
+        pass
+    return key
+
 
 
 def compute_merkle_hash(prev_hash: str, canonical_payload: str) -> str:

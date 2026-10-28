@@ -22,7 +22,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .graph import GraphView, close_kuzu_db
 from .graph import commit_decision as graph_commit_decision
-from .ledger import DEFAULT_DATA_DIR, Ledger
+from .ledger import DEFAULT_DATA_DIR, Ledger, load_or_create_signing_key
 from .ledger import log_execution_artifact as ledger_log_artifact
 from .ranker import HybridRRFRanker
 from .views import FTS5View, VectorView
@@ -34,6 +34,7 @@ def create_mcp_server(
     signing_key: Optional[Any] = None,
     embed_fn: Optional[Callable[[str], list[float]]] = None,
     server_name: str = "aethelgard",
+    key_path: Optional[Path | str] = None,
 ) -> FastMCP:
     """Create and configure a FastMCP server instance exposing Aethelgard's 5 cognitive tools.
 
@@ -43,6 +44,7 @@ def create_mcp_server(
         signing_key: Optional Ed25519PrivateKey for signing ledger events.
         embed_fn: Optional custom embedding function for VectorView and ranker.
         server_name: Name of the FastMCP server instance (default: 'aethelgard').
+        key_path: Optional Path to persistent Ed25519 signing key.
     """
     resolved_db_path: Path | str
     if db_path is not None:
@@ -52,8 +54,13 @@ def create_mcp_server(
     else:
         resolved_db_path = DEFAULT_DATA_DIR / "ledger.db"
 
+    # Load persistent signing key if not explicitly passed
+    resolved_signing_key = signing_key
+    if resolved_signing_key is None and str(resolved_db_path) != ":memory:":
+        resolved_signing_key = load_or_create_signing_key(key_path)
+
     # Initialize subsystems
-    ledger = Ledger(db_path=resolved_db_path, signing_key=signing_key)
+    ledger = Ledger(db_path=resolved_db_path, signing_key=resolved_signing_key)
     fts_view = FTS5View(db_path=resolved_db_path)
     vec_view = VectorView(db_path=resolved_db_path, embed_fn=embed_fn)
     graph_view = GraphView(db_path=resolved_db_path, graph_path=graph_path)
@@ -234,6 +241,7 @@ def run_stdio(
     graph_path: Optional[Path | str] = None,
     signing_key: Optional[Any] = None,
     embed_fn: Optional[Callable[[str], list[float]]] = None,
+    key_path: Optional[Path | str] = None,
 ) -> None:
     """Run the FastMCP bridge server using the stdio transport."""
     server = create_mcp_server(
@@ -241,6 +249,7 @@ def run_stdio(
         graph_path=graph_path,
         signing_key=signing_key,
         embed_fn=embed_fn,
+        key_path=key_path,
     )
     server.run(transport="stdio")
 
@@ -265,9 +274,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=None,
         help="Path to graph.kuzu (defaults to sibling of ledger.db)",
     )
+    parser.add_argument(
+        "--key",
+        type=Path,
+        default=None,
+        help="Path to Ed25519 signing key (defaults to ~/.local/share/aethelgard/ed25519.pem)",
+    )
 
     args = parser.parse_args(argv)
-    run_stdio(db_path=args.db, graph_path=args.graph)
+    run_stdio(db_path=args.db, graph_path=args.graph, key_path=args.key)
     return 0
 
 

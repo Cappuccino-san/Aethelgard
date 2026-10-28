@@ -5,8 +5,10 @@ from .canonical import canonicalize_json
 from .embeddings import generate_mock_embedding, get_embedding
 from .graph import GraphView, close_kuzu_db, commit_decision, get_kuzu_db
 from .ledger import (
+    DEFAULT_KEY_PATH,
     GENESIS_HASH,
     Ledger,
+    load_or_create_signing_key,
     log_execution_artifact,
     verify_provenance,
 )
@@ -41,6 +43,8 @@ from .views import (
 
 __all__ = [
     "GENESIS_HASH",
+    "DEFAULT_KEY_PATH",
+    "load_or_create_signing_key",
     "Ledger",
     "FTS5View",
     "VectorView",

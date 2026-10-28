@@ -191,3 +191,39 @@ def test_decoupled_fts5_drop_rebuild_identical_and_ledger_intact(tmp_path: Path)
         "failed_seq": None,
         "reason": None,
     }
+
+
+def test_persistent_signing_key_lifecycle(tmp_path: Path) -> None:
+    """Verify Ed25519 signing key persistence across startups without regeneration."""
+    from aethelgard.ledger import load_or_create_signing_key
+
+    key_path = tmp_path / "ed25519.pem"
+    db_file = tmp_path / "ledger.db"
+
+    # 1. First startup: generates key once and persists
+    k1 = load_or_create_signing_key(key_path)
+    assert key_path.exists()
+    pub1 = k1.public_key().public_bytes_raw().hex()
+
+    # 2. Second startup: loads identical key from disk without regenerating
+    k2 = load_or_create_signing_key(key_path)
+    pub2 = k2.public_key().public_bytes_raw().hex()
+    assert pub1 == pub2
+
+    # 3. Commit event using loaded key
+    ledger = Ledger(db_path=db_file, signing_key=k2)
+    ev = commit_decision(
+        ledger=ledger,
+        title="ADR-Persistent-Key",
+        context="Testing key persistence",
+        rejected=[],
+        decision="Use persistent Ed25519 key",
+    )
+    assert ev["signature"] is not None
+    assert ev["pub_key"] == pub1
+
+    # 4. Verify provenance succeeds with signature check
+    audit = ledger.verify_provenance()
+    assert audit["valid"] is True
+    assert audit["verified_count"] == 1
+

@@ -21,3 +21,9 @@ graph.kuzu*
 dist/
 build/
 *.egg-info/
+
+# Cryptographic keys and secrets
+*.pem
+*.key
+signing_key*
+
