@@ -216,4 +216,4 @@ Default ledger location is `~/.local/share/aethelgard/ledger.db`. Use `--db <pat
 - `src/aethelgard/daemon.py` - Passive background capture daemon
 - `src/aethelgard/systemd.py` - Systemd user service unit generator
 - `src/aethelgard/cli.py` - `twin` unified CLI entrypoint
-- `tests/` - Comprehensive test suite (32 unit & integration tests)
+- `tests/` - Comprehensive test suite (41 unit & integration tests)
